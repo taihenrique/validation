@@ -7,10 +7,17 @@ use brunoconte3\Validation\{
     ValidateCnpj,
     ValidatePhone,
     ValidateHour,
+    ValidateFile,
 };
 
 class Rules
 {
+    use TraitRuleArray;
+    use TraitRuleDate;
+    use TraitRuleInteger;
+    use TraitRuleFile;
+    use TraitRuleString;
+
     protected $errors = false;
     public const RULES_WITHOUT_FUNCS = ['convert'];
 
@@ -18,6 +25,20 @@ class Rules
     {
         $msg = "Uma regra inválida está sendo aplicada no campo $field!";
         $this->errors[$field] = $msg;
+    }
+
+    private function validateHandleErrorsInArray(array $errorList = [], string $field = ''): void
+    {
+        if (count($errorList) > 0) {
+            if ((is_array($this->errors) && array_key_exists($field, $this->errors))) {
+                foreach ($errorList as $error) {
+                    array_push($this->errors[$field], $error);
+                }
+                $this->errors[$field] = array_unique($this->errors[$field]);
+            } else {
+                $this->errors[$field] = $errorList;
+            }
+        }
     }
 
     protected function prepareCharset(string $string = '', string $convert = 'UTF-8', bool $bom = false): string
@@ -45,7 +66,7 @@ class Rules
         return ($bom ? $bomchar : '') . $string;
     }
 
-    public static function functionsValidatade(): array
+    public static function functionsValidation(): array
     {
         return [
             'optional' => 'validateOptional',
@@ -80,11 +101,19 @@ class Rules
             'phone' => 'validatePhone',
             'plate' => 'validatePlate',
             'regex' => 'validateRegex',
+            'rgbColor' => 'validateRgbColor',
             'upper' => 'validateUpper',
             'url' => 'validateUrl',
             'noWeekend' => 'validateWeekend',
             'zipcode' => 'validateZipCode',
-            'json' => 'validateJson'
+            'json' => 'validateJson',
+            'maxUploadSize' => 'validateFileMaxUploadSize',
+            'minUploadSize' => 'validateFileMinUploadSize',
+            'fileName' => 'validateFileName',
+            'mimeType' => 'validateFileMimeType',
+            'requiredFile' => 'validateFileUploadMandatory',
+            'maxFile' => 'validateMaximumFileNumbers',
+            'minFile' => 'validateMinimumFileNumbers'
         ];
     }
 
@@ -95,9 +124,14 @@ class Rules
 
     protected function validateFieldMandatory($rule = '', $field = '', $value = null, $message = null)
     {
-        $value = is_array($value) ? $value : trim($value);
-        if (empty($value)) {
-            $this->errors[$field] = !empty($message) ? $message : "O campo $field é obrigatório!";
+        if (is_array($value)) {
+            if (count($value) <= 0) {
+                $this->errors[$field] = !empty($message) ? $message : "O campo $field é obrigatório!";
+            }
+        } else {
+            if (empty(trim($value)) && (strval($value) !== '0')) {
+                $this->errors[$field] = !empty($message) ? $message : "O campo $field é obrigatório!";
+            }
         }
     }
 
@@ -107,7 +141,8 @@ class Rules
             return;
         }
 
-        $method = trim(self::functionsValidatade()[trim(strtolower($rule))] ?? 'invalidRule');
+        $method = trim(self::functionsValidation()[trim($rule)] ?? 'invalidRule');
+
         $call = [$this, $method];
         //chama há função de validação, de cada parametro json
         if (is_callable($call, true, $method)) {
@@ -120,7 +155,7 @@ class Rules
     protected function levelSubLevelsArrayReturnJson(array $data, bool $recursive = false)
     {
         //funcao recurssiva para tratar array e retornar json valido
-        //essa função serve para validar dados com json_encode multiplos, e indices quebrados na estrutura
+        //essa função serve para validar dados com json_encode múltiplos, e indices quebrados na estrutura
         foreach ($data as $key => $val) {
             $key = $this->prepareCharset($key, 'UTF-8');
             if (is_string($val) && !empty($val)) {
@@ -181,18 +216,25 @@ class Rules
                 $rulesArray = json_decode($rules, true);
                 if (json_last_error() !== JSON_ERROR_NONE) {
                     $rulesArray = [];
-                    //suporte ao padrão PIPE
-                    //'int|required|min:14|max:14',
+                    // Suporte ao padrão PIPE, exemplo: 'int|required|min:14|max:14'.
                     $rulesConf = explode('|', trim($rules));
                     if (
                         !in_array('optional', $rulesConf)
                         || (in_array('optional', $rulesConf) && !empty($value) && $value !== 'null')
                     ) {
                         foreach ($rulesConf as $valueRuleConf) {
-                            $conf = explode(',', trim($valueRuleConf));
+                            $conf = preg_split('/[\,]/', trim($valueRuleConf), 2);
                             $ruleArrayConf = explode(':', $conf[0] ?? '');
-                            $msg = !empty($conf[1]) && trim($conf[1] ?? $rulesArray['mensagem'] ?? null);
-                            $rulesArray['mensagem'] = $msg;
+                            $regEx = (trim(strtolower($ruleArrayConf[0])) == 'regex') ? true : false;
+
+                            if (isset($ruleArrayConf[1]) && (strpos($valueRuleConf, ';') > 0) && !$regEx) {
+                                $ruleArrayConf[1] = explode(';', $ruleArrayConf[1]);
+                            }
+
+                            if (array_key_exists(1, $conf) && !empty($conf[1])) {
+                                $rulesArray['mensagem'] = trim(strip_tags($conf[1]));
+                            }
+
                             if (!empty($ruleArrayConf)) {
                                 $rulesArray[$ruleArrayConf[0] ?? (count($rulesArray) + 1)] = $ruleArrayConf[1] ?? true;
                             }
@@ -211,11 +253,12 @@ class Rules
                 unset($rulesArray['mensagem']);
             }
             foreach ($rulesArray as $key => $val) {
-                if (!in_array('optional', $rulesArray) || (in_array('optional', $rulesArray) && !empty($val))) {
+                $ruleValue = (!empty($val) || (intval($val) == 0)) ? true : false;
+                if (!in_array('optional', $rulesArray) || (in_array('optional', $rulesArray) && $ruleValue)) {
                     if (in_array(trim(strtolower($key)), self::RULES_WITHOUT_FUNCS)) {
                         continue;
                     }
-                    $method = trim(Rules::functionsValidatade()[trim($key)] ?? 'invalidRule');
+                    $method = trim(Rules::functionsValidation()[trim($key)] ?? 'invalidRule');
                     $call = [$this, $method];
                     //chama a função de validação, de cada parametro json
                     if (is_callable($call, true, $method)) {
@@ -262,87 +305,6 @@ class Rules
         }
     }
 
-    protected function validateMinimumField($rule = '', $field = '', $value = null, $message = null)
-    {
-        if (strlen($value) < $rule) {
-            $this->errors[$field] = !empty($message) ?
-                $message : "O campo $field precisa conter no mínimo $rule caracteres!";
-        }
-    }
-
-    protected function validateMaximumField($rule = '', $field = '', $value = null, $message = null)
-    {
-        if (strlen($value) > $rule) {
-            $this->errors[$field] = !empty($message) ?
-                $message : "O campo $field precisa conter no máximo $rule caracteres!";
-        };
-    }
-
-    protected function validateAlphabets($rule = '', $field = '', $value = null, $message = null)
-    {
-        if (
-            !preg_match(
-                '/^([a-zA-ZÀÁÂÃÄÅÇÈÉÊËÌÍÎÏÒÓÔÕÖßÙÚÛÜÝàáâãäåçèéêëìíîïðòóôõöùúûüýÿ\s])+$/',
-                $value
-            ) !== false
-        ) {
-            $this->errors[$field] = !empty($message) ?
-                $message : "O campo $field só pode conter caracteres alfabéticos!";
-        }
-    }
-
-    protected function validateAlphaNoSpecial($rule = '', $field = '', $value = null, $message = null)
-    {
-        if (
-            !preg_match(
-                '/^([a-zA-Z\s])+$/',
-                $value
-            ) !== false
-        ) {
-            $this->errors[$field] = !empty($message) ?
-                $message : "O campo $field só pode conter caracteres alfabéticos regular, não pode ter ascentos!";
-        }
-    }
-
-    protected function validateAlphaNumNoSpecial($rule = '', $field = '', $value = null, $message = null)
-    {
-        if (!preg_match('/^([a-zA-Z0-9\s])+$/', $value) !== false) {
-            $this->errors[$field] = !empty($message) ?
-                $message : "O campo $field só pode conter letras sem acentos e números, não pode carácter especial!";
-        }
-    }
-
-    protected function validateAlphaNumerics($rule = '', $field = '', $value = null, $message = null)
-    {
-        if (
-            !preg_match(
-                '/^([a-zA-Z0-9ÀÁÂÃÄÅÇÈÉÊËÌÍÎÏÒÓÔÕÖßÙÚÛÜÝàáâãäåçèéêëìíîïðòóôõöùúûüýÿ\s])+$/',
-                $value
-            ) !== false
-        ) {
-            $this->errors[$field] = !empty($message) ?
-                $message : "O campo $field só pode conter caracteres alfanuméricos!";
-        }
-    }
-
-    protected function validateArray($rule = '', $field = '', $value = null, $message = null)
-    {
-        if (!is_array($value)) {
-            $this->errors[$field] = !empty($message) ? $message : "A variável $field não é um array!";
-        }
-    }
-
-    protected function validateArrayValues($rule = '', $field = '', $value = null, $message = null)
-    {
-        $ruleArray = explode('-', $rule);
-
-        if (!in_array(trim($value), $ruleArray)) {
-            $this->errors[$field] = !empty($message)
-                ? $message
-                : "O campo $field precisa conter uma das opções [" . str_replace('-', ',', $rule) . '] !';
-        }
-    }
-
     protected function validateBoolean($rule = '', $field = '', $value = null, $message = null)
     {
         if (!filter_var($value, FILTER_VALIDATE_BOOLEAN)) {
@@ -351,239 +313,11 @@ class Rules
         }
     }
 
-    protected function validateCompanyIdentification($rule = '', $field = '', $value = null, $message = null)
-    {
-        if (is_numeric($value) && strlen($value) === 14) {
-            $value = Format::mask('##.###.###/####-##', $value);
-        }
-        if (empty($value) ||  !ValidateCnpj::validateCnpj($value)) {
-            $this->errors[$field] = !empty($message) ?
-                $message : "O campo $field é inválido!";
-        }
-    }
-
-    protected function validateDateBrazil($rule = '', $field = '', $value = null, $message = null)
-    {
-        if (is_numeric($value) && strlen($value) === 8) {
-            $value = Format::mask('##/##/####', $value);
-        }
-        if (empty($value) || !ValidateDate::validateDateBrazil($value)) {
-            $this->errors[$field] = !empty($message) ?
-                $message : "O campo $field não é uma data válida!";
-        }
-    }
-
-    protected function validateDateAmerican($rule = '', $field = '', $value = null, $message = null)
-    {
-        if (is_numeric($value) && strlen($value) === 8) {
-            $value = Format::mask('####-##-##', $value);
-        }
-        if (empty($value) || !ValidateDate::validateDateAmerican($value)) {
-            $this->errors[$field] = !empty($message) ?
-                $message : "O campo $field não é uma data válida!";
-        }
-    }
-
-    protected function validateEmail($rule = '', $field = '', $value = null, $message = null)
-    {
-        if (!filter_var($value, FILTER_VALIDATE_EMAIL)) {
-            $this->errors[$field] = !empty($message) ?
-                $message : "O campo $field deve ser um endereço de email válido!";
-        }
-    }
-
     protected function validateFloating($rule = '', $field = '', $value = null, $message = null)
     {
         if (!filter_var($value, FILTER_VALIDATE_FLOAT)) {
             $this->errors[$field] = !empty($message) ?
                 $message : "O campo $field deve ser do tipo real(flutuante)!";
-        }
-    }
-
-    protected function validateHour($rule = '', $field = '', $value = null, $message = null)
-    {
-        if (!ValidateHour::validateHour($value)) {
-            $this->errors[$field] = !empty($message) ?
-                $message : "O campo $field não é uma hora válida!";
-        }
-    }
-
-    protected function validateIdentifier($rule = '', $field = '', $value = null, $message = null)
-    {
-        if (strlen($value) === 11) {
-            $value = Format::mask('###.###.###-##', $value);
-        }
-        if (!ValidateCpf::validateCpf($value)) {
-            $this->errors[$field] = !empty($message) ?
-                $message : "O campo $field é inválido!";
-        }
-    }
-
-    protected function validateIdentifierOrCompany($rule = '', $field = '', $value = null, $message = null)
-    {
-        if (strlen($value) === 11) {
-            $value = Format::mask('###.###.###-##', $value);
-        }
-        if (is_numeric($value) && strlen($value) === 14) {
-            $value = Format::mask('##.###.###/####-##', $value);
-        }
-        if (strlen($value) === 14) {
-            if (!ValidateCpf::validateCpf($value)) {
-                $this->errors[$field] = !empty($message) ?
-                    $message : "O campo $field é inválido!";
-            }
-        }
-        if (strlen($value) === 18) {
-            if (empty($value) ||  !ValidateCnpj::validateCnpj($value)) {
-                $this->errors[$field] = !empty($message) ?
-                    $message : "O campo $field é inválido!";
-            }
-        }
-    }
-
-    protected function validateInteger($rule = '', $field = '', $value = null, $message = null)
-    {
-        if (!filter_var($value, FILTER_VALIDATE_INT)) {
-            $this->errors[$field] = !empty($message) ?
-                $message : "O campo $field deve ser do tipo inteiro!";
-        }
-    }
-
-    protected function validateIp($rule = '', $field = '', $value = null, $message = null)
-    {
-        if (!filter_var($value, FILTER_VALIDATE_IP)) {
-            $this->errors[$field] = !empty($message) ?
-                $message : "O campo $field deve ser um endereço de IP válido!";
-        }
-    }
-
-    protected function validateLower($rule = '', $field = '', $value = null, $message = null)
-    {
-        if (!ctype_lower(preg_replace('/\W+/', '', $value))) {
-            $this->errors[$field] = !empty($message) ? $message : "O campo $field precisa ser tudo minúsculo!";
-        }
-    }
-
-    protected function validateMac($rule = '', $field = '', $value = null, $message = null)
-    {
-        if (!filter_var($value, FILTER_VALIDATE_MAC)) {
-            $this->errors[$field] = !empty($message) ?
-                $message : "O campo $field deve ser um endereço de MAC válido!";
-        }
-    }
-
-    protected function validateSpace($rule = '', $field = '', $value = null, $message = null)
-    {
-        if (strpos($value, ' ') !== false) {
-            $this->errors[$field] = !empty($message) ?
-                $message : "O campo $field não pode conter espaço!";
-        }
-    }
-
-    protected function validateNumeric($rule = '', $field = '', $value = null, $message = null)
-    {
-        if (!is_numeric($value)) {
-            $this->errors[$field] = !empty($message) ?
-                $message : "O campo $field só pode conter valores numéricos!";
-        }
-    }
-
-    protected function validateNumMax($rule = '', $field = '', $value = null, $message = null)
-    {
-        if ($value > $rule) {
-            $this->errors[$field] = !empty($message) ?
-                $message : "O campo $field é permitido até o valor máximo de $rule!";
-        }
-    }
-
-    protected function validateNumMonth($rule = '', $field = '', $value = null, $message = null)
-    {
-        if (!is_int((int) $value)) {
-            $this->errors[$field] = !empty($message) ?
-                $message : "O campo $field precisa ser do valor inteiro!";
-        }
-        if ($value > 12 || $value <= 0 || strlen((string)$value) > 2) {
-            $this->errors[$field] = !empty($message) ?
-                $message : "O campo $field não é um mês válido!";
-        }
-    }
-
-    protected function validateNumMin($rule = '', $field = '', $value = null, $message = null)
-    {
-        if (!is_int((int) $value)) {
-            $this->errors[$field] = !empty($message) ? $message : "O campo $field não é um inteiro!";
-        }
-        if ($value < $rule) {
-            $this->errors[$field] = !empty($message) ?
-                $message : "O campo $field deve ter o valor mínimo de $rule!";
-        }
-    }
-
-    protected function validatePlate($rule = '', $field = '', $value = null, $message = null)
-    {
-        if (!preg_match('/^[A-Z]{3}-[0-9]{4}+$/', $value) !== false) {
-            $this->errors[$field] = !empty($message) ?
-                $message : "O campo $field deve corresponder ao formato AAA-0000!";
-        }
-    }
-
-    protected function validateRegex($rule = '', $field = '', $value = null, $message = null)
-    {
-        if (!preg_match($rule, $value) !== false) {
-            $this->errors[$field] = !empty($message) ?
-                $message : "O campo $field precisa conter um valor com formato válido!";
-        }
-    }
-
-    protected function validateUrl($rule = '', $field = '', $value = null, $message = null)
-    {
-        if (!filter_var($value, FILTER_VALIDATE_URL)) {
-            $this->errors[$field] = !empty($message) ?
-                $message : "O campo $field deve ser um endereço de URL válida!";
-        }
-    }
-
-    protected function validatePhone($rule = '', $field = '', $value = null, $message = null)
-    {
-        if (is_numeric($value) && in_array(strlen($value), [10, 11])) {
-            if (strlen($value) === 10) {
-                $value = Format::mask('(##)####-####', $value);
-            }
-            if (strlen($value) === 11) {
-                $value = Format::mask('(##)#####-####', $value);
-            }
-        }
-        if (!ValidatePhone::validate($value)) {
-            $this->errors[$field] = !empty($message) ? $message : "O campo $field não é um telefone válido!";
-        }
-    }
-
-    protected function validateUpper($rule = '', $field = '', $value = null, $message = null)
-    {
-        if (!ctype_upper(preg_replace('/\W+/', '', $value))) {
-            $this->errors[$field] = !empty($message) ? $message : "O campo $field precisa ser tudo maiúsculo!";
-        }
-    }
-
-    protected function validateWeekend($rule = '', $field = '', $value = null, $message = null)
-    {
-        if (strpos($value, '/') > -1) {
-            $value = Format::dateAmerican($value);
-        }
-        $day = date('w', strtotime($value));
-        if (in_array($day, [0, 6])) {
-            $this->errors[$field] = !empty($message) ? $message : "O campo $field não pode ser um Final de Semana!";
-        }
-    }
-
-    protected function validateZipCode($rule = '', $field = '', $value = null, $message = null)
-    {
-        if (is_numeric($value) && strlen($value) === 8) {
-            $value = Format::mask('#####-###', $value);
-        }
-        if (!preg_match('/^([0-9]{2}[0-9]{3}-[0-9]{3})+$/', $value) !== false) {
-            $this->errors[$field] = !empty($message) ?
-                $message : "O campo $field deve corresponder ao formato 00000-000!";
         }
     }
 

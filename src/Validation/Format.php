@@ -2,56 +2,47 @@
 
 namespace brunoconte3\Validation;
 
-use brunoconte3\Validation\ValidatePhone;
+use brunoconte3\Validation\{
+    ValidatePhone,
+    ValidateFile,
+};
 
-class Format
+class Format extends FormatAux
 {
-    private const DATA_TYPE_TO_CONVERT = [
-        'bool',
-        'float',
-        'int',
-        'numeric'
-    ];
-
-    private static function returnTypeToConvert(array $rules): ?string
-    {
-        foreach (self::DATA_TYPE_TO_CONVERT as $type) {
-            if (in_array($type, $rules)) {
-                return $type;
-            }
-        }
-        return null;
-    }
-
-    private static function executeConvert(string $type, $value)
-    {
-        switch ($type) {
-            case 'bool':
-                return filter_var($value, FILTER_VALIDATE_BOOLEAN) ? (bool) $value : $value;
-            case 'int':
-                return filter_var($value, FILTER_VALIDATE_INT) ? (int) $value : $value;
-            case 'float':
-            case 'numeric':
-                return filter_var($value, FILTER_VALIDATE_FLOAT) ? (float) $value : $value;
-            default:
-                return $value;
-        }
-    }
-
     /**
-     * @param float|int|string $valor
+     * @param float|int|string $value
      */
-    private static function formatCurrencyForFloat($valor): float
+    private static function formatCurrencyForFloat($value): float
     {
-        if (is_string($valor)) {
-            if (preg_match('/(\,|\.)/', substr(substr($valor, -3), 0, 1))) {
-                $valor = (strlen(self::onlyNumbers($valor)) > 0) ? self::onlyNumbers($valor) : '000';
-                $valor = substr_replace($valor, '.', -2, 0);
+        if (is_string($value)) {
+            if (preg_match('/(\,|\.)/', substr(substr($value, -3), 0, 1))) {
+                $value = (strlen(self::onlyNumbers($value)) > 0) ? self::onlyNumbers($value) : '000';
+                $value = substr_replace($value, '.', -2, 0);
             } else {
-                $valor = (strlen(self::onlyNumbers($valor)) > 0) ? self::onlyNumbers($valor) : '000';
+                $value = (strlen(self::onlyNumbers($value)) > 0) ? self::onlyNumbers($value) : '000';
             };
         }
-        return (float) $valor;
+        return (float) $value;
+    }
+
+    private static function formatFileName(string $fileName = ''): string
+    {
+        $dataName = explode('.', trim($fileName));
+        $ext  = end($dataName);
+
+        if (count($dataName) > 1) {
+            unset($dataName[count($dataName) - 1]);
+        }
+
+        $dataName = implode('_', $dataName);
+        $dataName = preg_replace('/\W/', '_', strtolower(self::removeAccent($dataName)));
+
+        return "{$dataName}.{$ext}";
+    }
+
+    private static function generateFileName(string $nameFile = ''): string
+    {
+        return date("d-m-Y_s_") . uniqid(rand() . rand() . rand() . time()) . '_' . $nameFile;
     }
 
     public static function convertTypes(array &$data, array $rules)
@@ -59,10 +50,10 @@ class Format
         $error = [];
         foreach ($rules as $key => $value) {
             $arrRules = explode('|', $value);
-            $type = self::returnTypeToConvert($arrRules);
+            $type = parent::returnTypeToConvert($arrRules);
             if (in_array('convert', $arrRules) && !empty($type)) {
                 try {
-                    $data[$key] = self::executeConvert($type, $data[$key]);
+                    $data[$key] = parent::executeConvert($type, $data[$key]);
                 } catch (\Exception $ex) {
                     $error[] = "falhar ao tentar converter {$data[$key]} para $type";
                 }
@@ -75,32 +66,61 @@ class Format
 
     public static function companyIdentification(string $cnpj): string
     {
+        parent::validateForFormatting('companyIdentification', 14, $cnpj);
         return preg_replace("/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/", "\$1.\$2.\$3/\$4-\$5", $cnpj);
     }
 
     public static function identifier(string $cpf): string
     {
+        parent::validateForFormatting('identifier', 11, $cpf);
         return preg_replace("/(\d{3})(\d{3})(\d{3})(\d{2})/", "\$1.\$2.\$3-\$4", $cpf);
     }
 
-    public static function telephone(int $number): string
+    public static function identifierOrCompany(string $cpfCnpj): string
     {
+        if (strlen($cpfCnpj) === 11) {
+            return self::identifier($cpfCnpj);
+        } elseif (strlen($cpfCnpj) === 14) {
+            return self::companyIdentification($cpfCnpj);
+        } else {
+            throw new \Exception('identifierOrCompany => Valor precisa ser um CPF ou CNPJ!');
+        }
+    }
+
+    /**
+     * @param string|int $number Pode receber uma String ou Inteiro, compatibilidade com sistemas que já usam
+     */
+    public static function telephone($number): string
+    {
+        if (strlen($number) < 10 || strlen($number) > 11) {
+            throw new \Exception('telephone precisa ter 10 ou 11 números!');
+        }
+        if (!is_numeric($number)) {
+            throw new \Exception('telephone precisa conter apenas números!');
+        }
         $number = '(' . substr($number, 0, 2) . ') ' . substr($number, 2, -4) . '-' . substr($number, -4);
         return $number;
     }
 
     public static function zipCode(string $value): string
     {
+        parent::validateForFormatting('zipCode', 8, $value);
         return substr($value, 0, 5) . '-' . substr($value, 5, 3);
     }
 
     public static function dateBrazil(string $date)
     {
+        if (strlen($date) < 8 || strlen($date) > 10) {
+            throw new \Exception('dateBrazil precisa conter 8 à 10 dígitos!');
+        }
         return date('d/m/Y', strtotime($date));
     }
 
     public static function dateAmerican(string $date)
     {
+        if (strlen($date) < 8 || strlen($date) > 10) {
+            throw new \Exception('dateAmerican precisa conter 8 à 10 dígitos!');
+        }
         if (strpos($date, '/') > -1) {
             return implode('-', array_reverse(explode('/', $date)));
         }
@@ -118,21 +138,21 @@ class Format
     }
 
     /**
-     * @param float|int|string $valor
+     * @param float|int|string $value
      */
-    public static function currency($valor): string
+    public static function currency($value): string
     {
-        $valor = self::formatCurrencyForFloat($valor);
-        return ((float) $valor !== '') ? number_format((float) $valor, 2, ',', '.') : '';
+        $value = self::formatCurrencyForFloat($value);
+        return ((float) $value !== '') ? number_format((float) $value, 2, ',', '.') : '';
     }
 
     /**
-     * @param float|int|string $valor
+     * @param float|int|string $value
      */
-    public static function currencyUsd($valor): string
+    public static function currencyUsd($value): string
     {
-        $valor = self::formatCurrencyForFloat($valor);
-        return ((float) $valor !== '') ?  number_format((float) $valor, 2, '.', ',') : '';
+        $value = self::formatCurrencyForFloat($value);
+        return ((float) $value !== '') ?  number_format((float) $value, 2, '.', ',') : '';
     }
 
     /**
@@ -193,6 +213,21 @@ class Format
         return mb_strtolower($string, $charset);
     }
 
+    public static function maskStringHidden(string $string, int $qtdHidden, int $positionHidden, string $char): ?string
+    {
+        if (empty(trim($string))) {
+            return null;
+        }
+        if ($qtdHidden > strlen($string)) {
+            throw new \Exception('Quantidade de caracteres para ocultar não pode ser maior que a String!');
+        }
+        if ($qtdHidden < 1) {
+            throw new \Exception('Quantidade de caracteres para ocultar não pode ser menor que 1!');
+        }
+        $chars = str_repeat($char, $qtdHidden);
+        return substr_replace($string, $chars, $positionHidden, strlen($chars));
+    }
+
     public static function reverse(string $string, string $charSet = 'UTF-8'): string
     {
         if (!extension_loaded('iconv')) {
@@ -206,8 +241,11 @@ class Format
         return $value === false ? null : $value;
     }
 
-    public static function removeAccent(string $string): string
+    public static function removeAccent(?string $string): ?string
     {
+        if (empty($string)) {
+            return null;
+        }
         return preg_replace(
             [
                 '/(á|à|ã|â|ä)/',
@@ -228,5 +266,52 @@ class Format
             explode(' ', 'a A e E i I o O u U n N c C'),
             $string
         );
+    }
+
+    public static function writeDateExtensive(string $date): string
+    {
+        if (strpos($date, '/') > -1) {
+            $date = implode('-', array_reverse(explode('/', $date)));
+        }
+
+        setlocale(LC_TIME, 'pt_BR', 'pt_BR.utf-8', 'pt_BR.utf-8', 'portuguese');
+        date_default_timezone_set('America/Sao_Paulo');
+        return strftime('%A, %d de %B de %Y', strtotime($date));
+    }
+
+    public static function writeCurrencyExtensive(float $numeral): string
+    {
+        if ($numeral <= 0) {
+            throw new \Exception('O valor numeral deve ser maior que zero!');
+        } else {
+            return parent::extensive($numeral);
+        }
+    }
+
+    public static function restructFileArray(array $file = []): array
+    {
+        $arrayFile = [];
+
+        if (count($file) > 0) {
+            $fileError = ValidateFile::validateFileErrorPhp($file);
+
+            if (count($fileError) > 0) {
+                return $fileError;
+            }
+
+            foreach ($file['name'] as $key => $name) {
+                $name = self::formatFileName($name);
+                $params = [
+                    'name'     => $name,
+                    'type'     => $file['type'][$key],
+                    'tmp_name' => $file['tmp_name'][$key],
+                    'error'    => $file['error'][$key],
+                    'size'     => $file['size'][$key],
+                    'name_upload' => self::generateFileName($name)
+                ];
+                array_push($arrayFile, $params);
+            }
+        }
+        return $arrayFile;
     }
 }
